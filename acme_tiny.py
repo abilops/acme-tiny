@@ -13,7 +13,7 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.StreamHandler())
 LOGGER.setLevel(logging.INFO)
 
-def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check=False, directory_url=DEFAULT_DIRECTORY_URL, contact=None):
+def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check=False, directory_url=DEFAULT_DIRECTORY_URL, contact=None, dns_script=None):
     directory, acct_headers, alg, jwk = None, None, None, None # global variables
 
     # helper functions - base64 encode for jose spec
@@ -127,28 +127,46 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
         domain = authorization['identifier']['value']
         log.info("Verifying {0}...".format(domain))
 
-        # find the http-01 challenge and write the challenge file
-        challenge = [c for c in authorization['challenges'] if c['type'] == "http-01"][0]
+        # prefer the http-01 challenge but fall back to dns-01
+        challenge = sorted(authorization['challenges'], key=lambda a: {"http-01": 0, "dns-01": 1}.get(a["type"], 100))[0]
         token = re.sub(r"[^A-Za-z0-9_\-]", "_", challenge['token'])
         keyauthorization = "{0}.{1}".format(token, thumbprint)
         wellknown_path = os.path.join(acme_dir, token)
-        with open(wellknown_path, "w") as wellknown_file:
-            wellknown_file.write(keyauthorization)
+        txtrecord = _b64(hashlib.sha256(keyauthorization).digest())
 
-        # check that the file is in place
-        try:
-            wellknown_url = "http://{0}/.well-known/acme-challenge/{1}".format(domain, token)
-            assert (disable_check or _do_request(wellknown_url)[0] == keyauthorization)
-        except (AssertionError, ValueError) as e:
-            raise ValueError("Wrote file to {0}, but couldn't download {1}: {2}".format(wellknown_path, wellknown_url, e))
+        # solve challenge and self check it
+        if challenge["type"] == "http-01":
+            with open(wellknown_path, "w") as wellknown_file:
+                wellknown_file.write(keyauthorization)
+            try:
+                wellknown_url = "http://{0}/.well-known/acme-challenge/{1}".format(domain, token)
+                assert (disable_check or _do_request(wellknown_url)[0] == keyauthorization)
+            except (AssertionError, ValueError) as e:
+                raise ValueError("Wrote file to {0}, but couldn't download {1}: {2}".format(wellknown_path, wellknown_url, e))
+        elif challenge["type"] == "dns-01":
+            if dns_script is None or dns_script == "":
+                raise ValueError("Missing argument --dns-01-script")
+            _cmd([dns_script, "--add", "--domain", domain.lstrip("*."), "--txtrecord", txtrecord], err_msg="dns-01 script error while adding")
+            try:
+                assert (disable_check or _cmd(["host", "-t", "TXT", "_acme-challenge.{0}".format(domain.lstrip("*."))]).find(txtrecord.encode("ascii")) != -1)
+            except (AssertionError, IOError) as e:
+                _cmd([dns_script, "--remove", "--domain", domain.lstrip("*."), "--txtrecord", txtrecord], err_msg="dns-01 script error while removing")
+                raise ValueError("Set up the DNS challenge, but couldn't verify: {0}".format(e))
+        else:
+            raise ValueError("Unsupported challenge type {0}".format(challenge["type"]))
 
         # say the challenge is done
         _send_signed_request(challenge['url'], {}, "Error submitting challenges: {0}".format(domain))
         authorization = _poll_until_not(auth_url, ["pending"], "Error checking challenge status for {0}".format(domain))
         if authorization['status'] != "valid":
             raise ValueError("Challenge did not pass for {0}: {1}".format(domain, authorization))
-        os.remove(wellknown_path)
         log.info("{0} verified!".format(domain))
+
+        # clean up after challenge
+        if challenge["type"] == "http-01":
+            os.remove(wellknown_path)
+        elif challenge["type"] == "dns-01":
+            _cmd([dns_script, "--remove", "--domain", domain.lstrip("*."), "--txtrecord", txtrecord], err_msg="dns-01 script error while removing")
 
     # finalize the order with the csr
     log.info("Signing certificate...")
@@ -188,10 +206,11 @@ def main(argv=None):
     parser.add_argument("--directory-url", default=DEFAULT_DIRECTORY_URL, help="certificate authority directory url, default is Let's Encrypt")
     parser.add_argument("--ca", default=DEFAULT_CA, help="DEPRECATED! USE --directory-url INSTEAD!")
     parser.add_argument("--contact", metavar="CONTACT", default=None, nargs="*", help="Contact details (e.g. mailto:aaa@bbb.com) for your account-key")
+    parser.add_argument("--dns-01-script", required=False, default=None, help="path to script that updates your DNS server for the dns-01 challenge")
 
     args = parser.parse_args(argv)
     LOGGER.setLevel(args.quiet or LOGGER.level)
-    signed_crt = get_crt(args.account_key, args.csr, args.acme_dir, log=LOGGER, CA=args.ca, disable_check=args.disable_check, directory_url=args.directory_url, contact=args.contact)
+    signed_crt = get_crt(args.account_key, args.csr, args.acme_dir, log=LOGGER, CA=args.ca, disable_check=args.disable_check, directory_url=args.directory_url, contact=args.contact, dns_script=args.dns_01_script)
     sys.stdout.write(signed_crt)
 
 if __name__ == "__main__": # pragma: no cover

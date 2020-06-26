@@ -122,6 +122,17 @@ and read your private account key and CSR.
 python acme_tiny.py --account-key ./account.key --csr ./domain.csr --acme-dir /var/www/challenges/ > ./signed_chain.crt
 ```
 
+If you are requesting a wildcard certificate (`*.yoursite.com`), then Let's
+Encrypt will require you to prove ownership of DNS via the dns-01 challenge. In
+this case, additionally provide the `--dns-01-script` argument when calling
+`acme_tiny.py`. It must contain the path to a script which can add/remove a TXT
+record `_acme-challenge.yoursite.com` on your DNS server. The script must have
+the following signature: `dns_script (--add|--remove) --domain DOMAIN
+-txtrecord TXTRECORD`. Example: `dns_script --add --domain yoursite.com
+--txtrecord qLSh85v2W8MFIUWrCbx27FZM_LIfq6qvK5ulrowoxAA`. Your script should
+sleep after adding the TXT record for however long it requires for the DNS
+changes to propagate. For example 15 minutes should be safe in most cases.
+
 ### Step 5: Install the certificate
 
 The signed https certificate chain that is output by this script can be used along

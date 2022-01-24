@@ -128,7 +128,7 @@ this case, additionally provide the `--dns-01-script` argument when calling
 `acme_tiny.py`. It must contain the path to a script which can add/remove a TXT
 record `_acme-challenge.yoursite.com` on your DNS server. The script must have
 the following signature: `dns_script (--add|--remove) --domain DOMAIN
--txtrecord TXTRECORD`. Example: `dns_script --add --domain yoursite.com
+--txtrecord TXTRECORD`. Example: `dns_script --add --domain yoursite.com
 --txtrecord qLSh85v2W8MFIUWrCbx27FZM_LIfq6qvK5ulrowoxAA`. Your script should
 sleep after adding the TXT record for however long it requires for the DNS
 changes to propagate. For example 15 minutes should be safe in most cases.
